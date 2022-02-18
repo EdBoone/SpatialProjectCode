@@ -34,10 +34,13 @@ library(spBayes)
 library(schnellerGP)
 source( "var_pred_code.R" )
 
-################################
-# Generate Data 
-################################
 # set.seed(1234)
+# Simulation parameters...
+nSim1 <- 10               # Number of simulations
+n.samples <-2000          # Number of MCMC samples for spNNGP and spBayes
+
+# Lambda... the value we are varying
+lambda1 <- 0.5
 
 #n=number of observations  (n1,n2 are grid dimensions if spatial.design="grid.2d")
 n=100;  n1=10; n2=10
@@ -75,12 +78,13 @@ if (spatial.design=="random.2d"){  # Random on unit square (2d)
 }
 locs = cbind(x1,x2)
 locs_p = cbind( x1_p, x2_p )
+n_p <- nrow( locs_p )
 
 #########################################################################
 #  True parameters 
 p = 1
 F = matrix(1,n,p)                             # Design Matrix 
-F_p = matrix( 1, (n1-1)*(n2-1), p )
+F_f = matrix( 1, n+n_p, p )
 #Lambda = matrix(0,2,2)                       # Zero Out Factor Loadings
 I = diag( n )
 I_p = diag( (n1-1)*(n2-1) )
@@ -88,16 +92,11 @@ I_p = diag( (n1-1)*(n2-1) )
 # Parameters (1=Variable 1;  2=Variable 2)
 beta1=rep(0,p); sigmasq1=1; phi1=0.3; kappa1=0.5; tausq1=.001
 beta2=rep(0,p); sigmasq2=2; phi2=1.0; kappa2=0.5; tausq2=.001
-Lambda = matrix(c(1,0,.5,1),byrow=T,ncol=2)   # Factor Loading Matrix
+Lambda = matrix(c(1,0,lambda1 ,1),byrow=T,ncol=2)   # Factor Loading Matrix
 
 # Distance Matrix
 D = as.matrix(dist(locs))
-D_p = as.matrix( dist( locs_p ) )
-
-#########################################################################
-# Simulation Set up
-#########################################################################
-nSim1 <- 10
+D_f = as.matrix( dist( rbind( locs, locs_p ) ) )
 
 # Containers to hold the results.
 HodlR.time1 <- rep( 0, nSim1 )
@@ -108,45 +107,53 @@ spB.time1 <- rep( 0, nSim1 )
 spB.mse1 <- rep( 0, nSim1 )
 
 
-
+#########################################################################
+# Simulation Run
+#########################################################################
 for( iter1 in 1:nSim1 ){
   #########################################################################
   #  Data Generation
   # Spatial Correlation Matrices
-  R1 = Matern(D,range=phi1,smoothness=kappa1)
-  R2 = Matern(D,range=phi2,smoothness=kappa2)
+  #R1 = Matern(D,range=phi1,smoothness=kappa1)
+  #R2 = Matern(D,range=phi2,smoothness=kappa2)
+  
+  # Full Spatial Correlation matrices
+  R1_f = Matern(D_f, range = phi1, smoothness = kappa1 )
+  R2_f = Matern(D_f, range = phi2, smoothness = kappa2 )
+  
+  #R1 = R1_f[ 1:n, 1:n ]
+  #R2 = R2_f[ 1:n, 1:n ]
   
   # For predictive 
-  R1_p = Matern(D_p,range=phi1,smoothness=kappa1)
-  R2_p = Matern(D_p,range=phi2,smoothness=kappa2)
+  #R1_p = R1_f[ (n+1):(n+n_p), (n+1):(n+n_p) ]
+  #R2_p = R2_f[ (n+1):(n+n_p), (n+1):(n+n_p) ]
+  
+  # Cross Spatial Correlation between sites
+  #R1_cp = R1_f[ 1:n, (n+1):(n+n_p)]
+  #R2_cp = R2_f[ 1:n, (n+1):(n+n_p)]
   
   # Gaussian Processes
-  Z1 = F %*% beta1 + sqrt(sigmasq1) * t(chol(R1)) %*% rnorm(n)
-  Z2 = F %*% beta2 + sqrt(sigmasq2) * t(chol(R2)) %*% rnorm(n)
+  # Z1 = F %*% beta1 + sqrt(sigmasq1) * t(chol(R1)) %*% rnorm(n)
+  # Z2 = F %*% beta2 + sqrt(sigmasq2) * t(chol(R2)) %*% rnorm(n)
   
-  Z1_p = F_p %*% beta1 + sqrt(sigmasq1) * t(chol(R1_p)) %*% rnorm((n1-1)*(n2-1))
-  Z2_p = F_p %*% beta2 + sqrt(sigmasq2) * t(chol(R2_p)) %*% rnorm((n1-1)*(n2-1))
+  Z1_f = F_f %*% beta1 + sqrt(sigmasq1) * t(chol(R1_f)) %*% rnorm(n+n_p)
+  Z2_f = F_f %*% beta2 + sqrt(sigmasq2) * t(chol(R2_f)) %*% rnorm(n+n_p)
+  
   
   # Factor Models
-  eta = matrix(rnorm(n*2),n,2)
-  W1 = eta %*% t(Lambda)[1,]
-  W2 = eta %*% t(Lambda)[2,]
-  
-  # Factor models for the predictive data
-  eta_p = matrix( rnorm( (n1-1)*(n2-1)*2), (n1-1)*(n2-1), 2)
-  W1_p = eta_p %*% t(Lambda)[1,]
-  W2_p = eta_p %*% t(Lambda)[2,]
+  eta_f = matrix(rnorm( (n+n_p)*2),n+n_p,2)
+  W1_f = eta_f %*% t(Lambda)[1,]
+  W2_f = eta_f %*% t(Lambda)[2,]
   
   # Observed Data
-  Y1 = Z1 + W1 + sqrt(tausq1)*rnorm(n)
-  Y2 = Z2 + W2 + sqrt(tausq2)*rnorm(n)
+  Y1_f = Z1_f + W1_f + sqrt(tausq1)*rnorm(n+n_p)
+  Y2_f = Z2_f + W2_f + sqrt(tausq2)*rnorm(n+n_p)
   
-  # Data to predict
-  Y1_p = Z1_p + W1_p + sqrt(tausq1)*rnorm((n1-1)*(n2-1))
-  Y2_p = Z2_p + W2_p + sqrt(tausq2)*rnorm((n1-1)*(n2-1))
+  y1 = Y1_f[ 1:n ]
+  y2 = Y2_f[ 1:n ]
   
-  y1 = Y1
-  y2 = Y2
+  y1_p = Y1_f[ (n+1):(n+n_p) ]
+  y2_p = Y2_f[ (n+1):(n+n_p) ]
   
   HodlR.tic1 <- Sys.time()
 ############################################################################
@@ -201,7 +208,7 @@ for( iter1 in 1:nSim1 ){
                                      lsMat[jj,2,1],idxs[,2],"matern")
       
       #sample the length scale
-      lsMat[jj,1,1] = HODLR_TP_sample_ls(lsMat[jj,1,1],rY,TPscale[jj,1]*TPs[,2,jj,1],x[,1],
+      lsMat[jj,1,2] = HODLR_TP_sample_ls(lsMat[jj,1,2],rY,TPscale[jj,2]*TPs[,2,jj,2],x[,1],
                                          temp_tau,c(0.1,10),idxs[,1],kernel="matern")
       lsMat[jj,2,1] = HODLR_TP_sample_ls(lsMat[jj,2,1],rY,TPscale[jj,1]*TPs[,1,jj,1],x[,2],
                                          temp_tau,c(0.1,10),idxs[,2],kernel="matern")
@@ -293,7 +300,7 @@ tic1.sgnnp <- Sys.time()
 #  Fit standard spNNGP model
 #
 ###############################################################################
-  n.samples <-2000
+  #n.samples <-2000
   starting <-list("phi"=3/0.5, "sigma.sq"=1, "tau.sq"=1) 
   priors <-list("phi.Unif"=c(3/1, 3/0.1), "sigma.sq.IG"=c(2, 1), "tau.sq.IG"=c(2, 1)) 
   cov.model <-"exponential" 
