@@ -28,9 +28,11 @@ library(fields)
 library(Matrix)
 library(ggplot2)
 library(spNNGP)
+library(spBayes)
 # data("MI_TSCA")
 # head(MI_TSCA)
 library(schnellerGP)
+source( "var_pred_code.R" )
 
 ################################
 # Generate Data 
@@ -102,235 +104,271 @@ HodlR.time1 <- rep( 0, nSim1 )
 HodlR.mse1 <- rep( 0, nSim1 )
 sgNNP.mse1 <- rep( 0, nSim1 )
 sgNNP.time1 <- rep( 0, nSim1 )
+spB.time1 <- rep( 0, nSim1 )
+spB.mse1 <- rep( 0, nSim1 )
 
 
 
 for( iter1 in 1:nSim1 ){
-#########################################################################
-#  Data Generation
-# Spatial Correlation Matrices
-R1 = Matern(D,range=phi1,smoothness=kappa1)
-R2 = Matern(D,range=phi2,smoothness=kappa2)
-
-# For predictive 
-R1_p = Matern(D_p,range=phi1,smoothness=kappa1)
-R2_p = Matern(D_p,range=phi2,smoothness=kappa2)
-
-# Gaussian Processes
-Z1 = F %*% beta1 + sqrt(sigmasq1) * t(chol(R1)) %*% rnorm(n)
-Z2 = F %*% beta2 + sqrt(sigmasq2) * t(chol(R2)) %*% rnorm(n)
-
-Z1_p = F_p %*% beta1 + sqrt(sigmasq1) * t(chol(R1_p)) %*% rnorm((n1-1)*(n2-1))
-Z2_p = F_p %*% beta2 + sqrt(sigmasq2) * t(chol(R2_p)) %*% rnorm((n1-1)*(n2-1))
-
-# Factor Models
-eta = matrix(rnorm(n*2),n,2)
-W1 = eta %*% t(Lambda)[1,]
-W2 = eta %*% t(Lambda)[2,]
-
-# Factor models for the predictive data
-eta_p = matrix( rnorm( (n1-1)*(n2-1)*2), (n1-1)*(n2-1), 2)
-W1_p = eta_p %*% t(Lambda)[1,]
-W2_p = eta_p %*% t(Lambda)[2,]
-
-# Observed Data
-Y1 = Z1 + W1 + sqrt(tausq1)*rnorm(n)
-Y2 = Z2 + W2 + sqrt(tausq2)*rnorm(n)
-
-# Data to predict
-Y1_p = Z1_p + W1_p + sqrt(tausq1)*rnorm((n1-1)*(n2-1))
-Y2_p = Z2_p + W2_p + sqrt(tausq2)*rnorm((n1-1)*(n2-1))
-
-HodlR.tic1 <- Sys.time()
+  #########################################################################
+  #  Data Generation
+  # Spatial Correlation Matrices
+  R1 = Matern(D,range=phi1,smoothness=kappa1)
+  R2 = Matern(D,range=phi2,smoothness=kappa2)
+  
+  # For predictive 
+  R1_p = Matern(D_p,range=phi1,smoothness=kappa1)
+  R2_p = Matern(D_p,range=phi2,smoothness=kappa2)
+  
+  # Gaussian Processes
+  Z1 = F %*% beta1 + sqrt(sigmasq1) * t(chol(R1)) %*% rnorm(n)
+  Z2 = F %*% beta2 + sqrt(sigmasq2) * t(chol(R2)) %*% rnorm(n)
+  
+  Z1_p = F_p %*% beta1 + sqrt(sigmasq1) * t(chol(R1_p)) %*% rnorm((n1-1)*(n2-1))
+  Z2_p = F_p %*% beta2 + sqrt(sigmasq2) * t(chol(R2_p)) %*% rnorm((n1-1)*(n2-1))
+  
+  # Factor Models
+  eta = matrix(rnorm(n*2),n,2)
+  W1 = eta %*% t(Lambda)[1,]
+  W2 = eta %*% t(Lambda)[2,]
+  
+  # Factor models for the predictive data
+  eta_p = matrix( rnorm( (n1-1)*(n2-1)*2), (n1-1)*(n2-1), 2)
+  W1_p = eta_p %*% t(Lambda)[1,]
+  W2_p = eta_p %*% t(Lambda)[2,]
+  
+  # Observed Data
+  Y1 = Z1 + W1 + sqrt(tausq1)*rnorm(n)
+  Y2 = Z2 + W2 + sqrt(tausq2)*rnorm(n)
+  
+  # Data to predict
+  Y1_p = Z1_p + W1_p + sqrt(tausq1)*rnorm((n1-1)*(n2-1))
+  Y2_p = Z2_p + W2_p + sqrt(tausq2)*rnorm((n1-1)*(n2-1))
+  
+  y1 = Y1
+  y2 = Y2
+  
+  HodlR.tic1 <- Sys.time()
 ############################################################################
 #
-#  Fit the model
+#  Hodlr Fit the model
 #
 ############################################################################
-x = cbind( x1, x2 )
-x[,1] = (x[,1]-min(x[,1]))/max(x[,1])
-x[,2] = (x[,2]-min(x[,2]))/max(x[,2])
-
-idx_lat_mi = order(x[,1])
-idx_lon_mi = order(x[,2])
-TPs <- array(1,dim= c(nrow(x),2,2,2))
-idxs   <- matrix(NA,nrow=nrow(x),2)
-idxs[,1]    <- idx_lat_mi 
-idxs[,2]    <- idx_lon_mi
-
-lsMat <- array(1,c(2,2,2))            #Matrix of length Scales
-TPscale <- matrix(sort(rnorm(2)),2,2) #Matrix of Variances
-cur_tau_1 = 0.5
-cur_tau_2 = 0.5
-
-y1 = Y1
-y2 = Y2
-
-# For Factor analysis
-lambda = matrix(rnorm(4),2,2)
-#kronecker(Diagonal(10),solve(t(lambda)%*%lambda + diag(2)))
-
-temp_tau = 1000
-etas = rep(0,2*length(y1))
-t_etas = matrix(etas,nrow=2)
-#toDo : integrate the factor analysis into the 
-#       model. I.E. build the residual into the factor model
-
-for (ii in 1:25){
-  #find the factor 'mean'
+  x = cbind( x1, x2 )
+  x[,1] = (x[,1]-min(x[,1]))/max(x[,1])
+  x[,2] = (x[,2]-min(x[,2]))/max(x[,2])
+  
+  idx_lat_mi = order(x[,1])
+  idx_lon_mi = order(x[,2])
+  TPs <- array(1,dim= c(nrow(x),2,2,2))
+  idxs   <- matrix(NA,nrow=nrow(x),2)
+  idxs[,1]    <- idx_lat_mi 
+  idxs[,2]    <- idx_lon_mi
+  
+  lsMat <- array(1,c(2,2,2))            #Matrix of length Scales
+  TPscale <- matrix(sort(rnorm(2)),2,2) #Matrix of Variances
+  cur_tau_1 = 0.5
+  cur_tau_2 = 0.5
+  
+  # For Factor analysis
+  lambda = matrix(rnorm(4),2,2)
+  #kronecker(Diagonal(10),solve(t(lambda)%*%lambda + diag(2)))
+  
+  temp_tau = 1000
+  etas = rep(0,2*length(y1))
   t_etas = matrix(etas,nrow=2)
-  fact_mean = lambda%*%t_etas #latent factor mean
-  ##############################
-  # Sample from the additive TP y1
-  for (jj in 1:(dim(TPs)[3])){
-    ids = 1:(dim(TPs)[3])
-    ids = ids[-jj]
-    rY = matrix(y1-fact_mean[1,])
-    for (kk in ids){
-      rY = rY - as.matrix(TPscale[kk,1]*apply(TPs[,,kk,1],1,prod))
+  #toDo : integrate the factor analysis into the 
+  #       model. I.E. build the residual into the factor model
+  
+  for (ii in 1:25){
+    #find the factor 'mean'
+    t_etas = matrix(etas,nrow=2)
+    fact_mean = lambda%*%t_etas #latent factor mean
+    ##############################
+    # Sample from the additive TP y1
+    for (jj in 1:(dim(TPs)[3])){
+      ids = 1:(dim(TPs)[3])
+      ids = ids[-jj]
+      rY = matrix(y1-fact_mean[1,])
+      for (kk in ids){
+        rY = rY - as.matrix(TPscale[kk,1]*apply(TPs[,,kk,1],1,prod))
+      }
+      
+      #sample the two Tensor Products
+      TPs[,1,jj,1] = HODLR_TP_sample(rY,TPscale[jj,1]*TPs[,2,jj,1],x[,1],temp_tau,
+                                     lsMat[jj,1,1],idxs[,1],"matern")
+      TPs[,2,jj,1] = HODLR_TP_sample(rY,TPscale[jj,1]*TPs[,1,jj,1],x[,2],temp_tau,
+                                     lsMat[jj,2,1],idxs[,2],"matern")
+      
+      #sample the length scale
+      lsMat[jj,1,1] = HODLR_TP_sample_ls(lsMat[jj,1,1],rY,TPscale[jj,1]*TPs[,2,jj,1],x[,1],
+                                         temp_tau,c(0.1,10),idxs[,1],kernel="matern")
+      lsMat[jj,2,1] = HODLR_TP_sample_ls(lsMat[jj,2,1],rY,TPscale[jj,1]*TPs[,1,jj,1],x[,2],
+                                         temp_tau,c(0.1,10),idxs[,2],kernel="matern")
+      
+      TPscale[jj,1] = HODLR_TP_sample_scale(rY,TPs[,,jj,1],temp_tau)
     }
     
-    #sample the two Tensor Products
-    TPs[,1,jj,1] = HODLR_TP_sample(rY,TPscale[jj,1]*TPs[,2,jj,1],x[,1],temp_tau,
-                                   lsMat[jj,1,1],idxs[,1],"matern")
-    TPs[,2,jj,1] = HODLR_TP_sample(rY,TPscale[jj,1]*TPs[,1,jj,1],x[,2],temp_tau,
-                                   lsMat[jj,2,1],idxs[,2],"matern")
-    
-    #sample the length scale
-    lsMat[jj,1,1] = HODLR_TP_sample_ls(lsMat[jj,1,1],rY,TPscale[jj,1]*TPs[,2,jj,1],x[,1],
-                                       temp_tau,c(0.1,10),idxs[,1],kernel="matern")
-    lsMat[jj,2,1] = HODLR_TP_sample_ls(lsMat[jj,2,1],rY,TPscale[jj,1]*TPs[,1,jj,1],x[,2],
-                                       temp_tau,c(0.1,10),idxs[,2],kernel="matern")
-    
-    TPscale[jj,1] = HODLR_TP_sample_scale(rY,TPs[,,jj,1],temp_tau)
-  }
-  
-  m_mean1 = rY*0; 
-  for (kk in 1:(dim(TPs)[3])){
-    m_mean1 = m_mean1 + as.matrix(TPscale[kk,1]*apply(TPs[,,kk,1],1,prod))
-  }
-  
-  
-  ##############################
-  # Sample from the additive TP y2
-  for (jj in 1:(dim(TPs)[3])){
-    ids = 1:(dim(TPs)[3])
-    ids = ids[-jj]
-    rY = matrix(y2-fact_mean[2,])
-    for (kk in ids){
-      rY = rY - as.matrix(TPscale[kk,2]*apply(TPs[,,kk,2],1,prod))
+    m_mean1 = rY*0; 
+    for (kk in 1:(dim(TPs)[3])){
+      m_mean1 = m_mean1 + as.matrix(TPscale[kk,1]*apply(TPs[,,kk,1],1,prod))
     }
-    TPs[,1,jj,2] = HODLR_TP_sample(rY,TPscale[jj,2]*TPs[,2,jj,2],x[,1],temp_tau,
-                                   lsMat[jj,1,2],idxs[,1],"matern")
-    TPs[,2,jj,2] = HODLR_TP_sample(rY,TPscale[jj,2]*TPs[,1,jj,2],x[,2],temp_tau,
-                                   lsMat[jj,2,2],idxs[,2],"matern")
     
     
-    lsMat[jj,1,2] = HODLR_TP_sample_ls(lsMat[jj,2,2],rY,TPscale[jj,2]*TPs[,2,jj,2],x[,1],
-                                       temp_tau,c(0.1,10),idxs[,1],kernel="matern")
-    lsMat[jj,2,2] = HODLR_TP_sample_ls(lsMat[jj,2,2],rY,TPscale[jj,2]*TPs[,1,jj,2],x[,2],
-                                       temp_tau,c(0.1,10),idxs[,2],kernel="matern")
+    ##############################
+    # Sample from the additive TP y2
+    for (jj in 1:(dim(TPs)[3])){
+      ids = 1:(dim(TPs)[3])
+      ids = ids[-jj]
+      rY = matrix(y2-fact_mean[2,])
+      for (kk in ids){
+        rY = rY - as.matrix(TPscale[kk,2]*apply(TPs[,,kk,2],1,prod))
+      }
+      TPs[,1,jj,2] = HODLR_TP_sample(rY,TPscale[jj,2]*TPs[,2,jj,2],x[,1],temp_tau,
+                                     lsMat[jj,1,2],idxs[,1],"matern")
+      TPs[,2,jj,2] = HODLR_TP_sample(rY,TPscale[jj,2]*TPs[,1,jj,2],x[,2],temp_tau,
+                                     lsMat[jj,2,2],idxs[,2],"matern")
+      
+      
+      lsMat[jj,1,2] = HODLR_TP_sample_ls(lsMat[jj,2,2],rY,TPscale[jj,2]*TPs[,2,jj,2],x[,1],
+                                         temp_tau,c(0.1,10),idxs[,1],kernel="matern")
+      lsMat[jj,2,2] = HODLR_TP_sample_ls(lsMat[jj,2,2],rY,TPscale[jj,2]*TPs[,1,jj,2],x[,2],
+                                         temp_tau,c(0.1,10),idxs[,2],kernel="matern")
+      
+      TPscale[jj,2] = HODLR_TP_sample_scale(rY,TPs[,,jj,2],temp_tau)
+    }
     
-    TPscale[jj,2] = HODLR_TP_sample_scale(rY,TPs[,,jj,2],temp_tau)
+    m_mean2 = rY*0; 
+    for (kk in 1:(dim(TPs)[3])){
+      m_mean2 = m_mean2 + as.matrix(TPscale[kk,2]*apply(TPs[,,kk,2],1,prod))
+    }
+    
+    ## Location Covariance
+    #latent factor model Y_i = \lambda_i * \eta + N(0,diag(\tau1,\tau2))
+    # sample all of the \eta_i temp_tau = 1000
+    
+    W  = matrix(c(temp_tau,0,0,temp_tau),2,2)
+    tX = kronecker(Diagonal(length(y1)),lambda%*%W) 
+    tV = kronecker(Diagonal(length(y1)),solve(t(lambda)%*%W%*%lambda + diag(2)))
+    tChol = kronecker(Diagonal(length(y1)),t(chol(solve(t(lambda)%*%W%*%lambda + diag(2)))))
+    tY = matrix(t(cbind(y1-m_mean1,y2-m_mean2)))
+    tM = tV%*%t(tX)%*%tY 
+    etas = tChol%*%matrix(rnorm(2*length(y1))) + tM
+    #sample lambda
+    # 1) Reorder the etas to build regression X matrix where
+    # the lambdas are our unknown quantities 
+    # lambda = (lambda_{1,1},lambda_{1,2},lambda_{2,1},lambda_{2,2})'
+    temp_etas = matrix(etas,ncol=2,byrow =T)
+    temp_etas = t(cbind(temp_etas,temp_etas))
+    t_e       = matrix(temp_etas,nrow = 2*length(y1),ncol=2,byrow=T)
+    TEMP1  <- Matrix(c(1,1,0,0),nrow=2*length(y1),ncol=2,byrow=T,sparse = T)
+    TEMP2  <- Matrix(c(0,0,1,1),nrow=2*length(y1),ncol=2,byrow=T,sparse = T)
+    temp_X = cbind(TEMP1*t_e,TEMP2*t_e)
+    tV = solve(t(temp_X)%*%temp_X*temp_tau+diag(4))
+    tM = tV%*%t(temp_X*temp_tau)%*%tY
+    lambdas = t(chol(as.matrix(tV)))%*%matrix(rnorm(4)) + tM
+    lambda = matrix(lambdas,2,2,byrow=T)
+    ##################################################################
+    #W1_p = eta_p %*% t(lambda)[1,]
+    #W2_p = eta_p %*% t(lambda)[2,]
+    
+    # Data to predict
+    # Y1_p = Z1_p + W1_p + sqrt(tausq1)*rnorm((n1-1)*(n2-1))
+    # Y2_p = Z2_p + W2_p + sqrt(tausq2)*rnorm((n1-1)*(n2-1))
+    # Data to predict
+    # Y1_p = m_mean1 + W1_p + sqrt(tausq1)*rnorm((n1-1)*(n2-1))
+    # Y2_p = m_mean2 + W2_p + sqrt(tausq2)*rnorm((n1-1)*(n2-1))
+    m_X <- matrix( 0, nrow = length( x1 ), ncol = 1 )
+    m_new <- matrix(0, nrow = length( x1_p ) , ncol = 1 )
+    HodlR.pred.y <- pred_Mean_Matern( xy, xy_p, m_X, m_new, 
+                                      obsv_X = m_mean1, 
+                                      var = 1,  lsMat)
   }
-  
-  m_mean2 = rY*0; 
-  for (kk in 1:(dim(TPs)[3])){
-    m_mean2 = m_mean2 + as.matrix(TPscale[kk,2]*apply(TPs[,,kk,2],1,prod))
-  }
-  
-  ## Location Covariance
-  #latent factor model Y_i = \lambda_i * \eta + N(0,diag(\tau1,\tau2))
-  # sample all of the \eta_i temp_tau = 1000
-  
-  W  = matrix(c(temp_tau,0,0,temp_tau),2,2)
-  tX = kronecker(Diagonal(length(y1)),lambda%*%W) 
-  tV = kronecker(Diagonal(length(y1)),solve(t(lambda)%*%W%*%lambda + diag(2)))
-  tChol = kronecker(Diagonal(length(y1)),t(chol(solve(t(lambda)%*%W%*%lambda + diag(2)))))
-  tY = matrix(t(cbind(y1-m_mean1,y2-m_mean2)))
-  tM = tV%*%t(tX)%*%tY 
-  etas = tChol%*%matrix(rnorm(2*length(y1))) + tM
-  #sample lambda
-  # 1) Reorder the etas to build regression X matrix where
-  # the lambdas are our unknown quantities 
-  # lambda = (lambda_{1,1},lambda_{1,2},lambda_{2,1},lambda_{2,2})'
-  temp_etas = matrix(etas,ncol=2,byrow =T)
-  temp_etas = t(cbind(temp_etas,temp_etas))
-  t_e       = matrix(temp_etas,nrow = 2*length(y1),ncol=2,byrow=T)
-  TEMP1  <- Matrix(c(1,1,0,0),nrow=2*length(y1),ncol=2,byrow=T,sparse = T)
-  TEMP2  <- Matrix(c(0,0,1,1),nrow=2*length(y1),ncol=2,byrow=T,sparse = T)
-  temp_X = cbind(TEMP1*t_e,TEMP2*t_e)
-  tV = solve(t(temp_X)%*%temp_X*temp_tau+diag(4))
-  tM = tV%*%t(temp_X*temp_tau)%*%tY
-  lambdas = t(chol(as.matrix(tV)))%*%matrix(rnorm(4)) + tM
-  lambda = matrix(lambdas,2,2,byrow=T)
-  ##################################################################
-  #W1_p = eta_p %*% t(lambda)[1,]
-  #W2_p = eta_p %*% t(lambda)[2,]
-  
-  # Data to predict
-  # Y1_p = Z1_p + W1_p + sqrt(tausq1)*rnorm((n1-1)*(n2-1))
-  # Y2_p = Z2_p + W2_p + sqrt(tausq2)*rnorm((n1-1)*(n2-1))
-  # Data to predict
-  # Y1_p = m_mean1 + W1_p + sqrt(tausq1)*rnorm((n1-1)*(n2-1))
-  # Y2_p = m_mean2 + W2_p + sqrt(tausq2)*rnorm((n1-1)*(n2-1))
-  
-  
-}
-HodlR.time1[ iter1 ] <- Sys.time() - HodlR.tic1
+  HodlR.time1[ iter1 ] <- Sys.time() - HodlR.tic1
 
 
 tic1.sgnnp <- Sys.time()
-############################################################################
+###############################################################################
+#
 #  Fit standard spNNGP model
-n.samples <-2000
-starting <-list("phi"=3/0.5, "sigma.sq"=1, "tau.sq"=1) 
-priors <-list("phi.Unif"=c(3/1, 3/0.1), "sigma.sq.IG"=c(2, 1), "tau.sq.IG"=c(2, 1)) 
-cov.model <-"exponential" 
-tuning <-list("phi"=0.2)
-ord <-order(xy[,1]+xy[,2]) 
-# For y1
-sim.s_y1 <-spNNGP(formula=y1~1, coords = xy , 
-               starting=starting, 
-               tuning=tuning, priors=priors, cov.model=cov.model, 
-               n.samples=n.samples, 
-               n.neighbors=10, method="latent", 
-               ord=ord, n.omp.threads=1,
-               n.report=1000, fit.rep=TRUE, 
-               sub.sample=list(start=1), 
-               return.neighbor.info = TRUE)
-sim.s_y1_pred <- predict( sim.s_y1, X.0 = matrix(1, nrow = length(Y1_p), ncol = 1 ), 
-                          coords.0 = as.matrix(xy_p),
-                          sub.sample=list(start=1000,thin=10),
-                          n.omp.threads=1,n.report=10000) 
-sim.s_y1.mse <- sum( (Y1_p - apply( sim.s_y1_pred$p.y.0, 1, median))^2)/length(Y1_p) 
-# For y2
-sim.s_y2 <-spNNGP(formula=y2~1, coords = xy , 
-                  starting=starting, 
-                  tuning=tuning, priors=priors, cov.model=cov.model, 
-                  n.samples=n.samples, 
-                  n.neighbors=10, method="latent", 
-                  ord=ord, n.omp.threads=2,
-                  n.report=1000, fit.rep=TRUE, 
-                  sub.sample=list(start=1), 
-                  return.neighbor.info = TRUE)
-sim.s_y2_pred <- predict( sim.s_y2, X.0 = matrix(1, nrow = length(Y2_p), ncol = 1 ), 
-                          coords.0 = as.matrix(xy_p),
-                          sub.sample=list(start=1000,thin=10),
-                          n.omp.threads=2,n.report=10000) 
-sim.s_y2.mse <- sum( (Y2_p - apply( sim.s_y2_pred$p.y.0, 1, median))^2)/length(Y1_p) 
-sgNNP.mse1[ iter1 ] <- (sim.s_y1.mse + sim.s_y2.mse)/2 
-sgNNP.time1[ iter1 ] <- Sys.time() - tic1.sgnnp
+#
+###############################################################################
+  n.samples <-2000
+  starting <-list("phi"=3/0.5, "sigma.sq"=1, "tau.sq"=1) 
+  priors <-list("phi.Unif"=c(3/1, 3/0.1), "sigma.sq.IG"=c(2, 1), "tau.sq.IG"=c(2, 1)) 
+  cov.model <-"exponential" 
+  tuning <-list("phi"=0.2)
+  ord <-order(xy[,1]+xy[,2]) 
+  # For y1
+  sim.s_y1 <-spNNGP(formula=y1~1, coords = xy , 
+                 starting=starting, 
+                 tuning=tuning, priors=priors, cov.model=cov.model, 
+                 n.samples=n.samples, 
+                 n.neighbors=10, method="latent", 
+                 ord=ord, n.omp.threads=1,
+                 n.report=1000, fit.rep=TRUE, 
+                 sub.sample=list(start=1), 
+                 return.neighbor.info = TRUE)
+  sim.s_y1_pred <- predict( sim.s_y1, X.0 = matrix(1, nrow = length(Y1_p), ncol = 1 ), 
+                            coords.0 = as.matrix(xy_p),
+                            sub.sample=list(start=1000,thin=10),
+                            n.omp.threads=1,n.report=10000) 
+  sim.s_y1.mse <- sum( (Y1_p - apply( sim.s_y1_pred$p.y.0, 1, median))^2)/length(Y1_p) 
+  # For y2
+  sim.s_y2 <-spNNGP(formula=y2~1, coords = xy , 
+                    starting=starting, 
+                    tuning=tuning, priors=priors, cov.model=cov.model, 
+                    n.samples=n.samples, 
+                    n.neighbors=10, method="latent", 
+                    ord=ord, n.omp.threads=1,
+                    n.report=1000, fit.rep=TRUE, 
+                    sub.sample=list(start=1), 
+                    return.neighbor.info = TRUE)
+  sim.s_y2_pred <- predict( sim.s_y2, X.0 = matrix(1, nrow = length(Y2_p), ncol = 1 ), 
+                            coords.0 = as.matrix(xy_p),
+                            sub.sample=list(start=1000,thin=10),
+                            n.omp.threads=2,n.report=10000) 
+  sim.s_y2.mse <- sum( (Y2_p - apply( sim.s_y2_pred$p.y.0, 1, median))^2)/length(Y1_p) 
+  sgNNP.mse1[ iter1 ] <- (sim.s_y1.mse + sim.s_y2.mse)/2 
+  sgNNP.time1[ iter1 ] <- Sys.time() - tic1.sgnnp
 
 
-# image.plot(lon_p,lat_p,
-#            matrix( apply( sim.s_y2_pred$p.y.0, 1, median) ,
-#                    (n1-1),(n2-1) ), main=expression(W[1]))
-# image.plot(lon_p,lat_p,
-#            matrix( Y2_p ,
-#                    (n1-1),(n2-1) ), main=expression(W[1]))
-
-
+#################################################################################################
+#
+# spBayes
+#
+#################################################################################################
+  
+  tic.spB <- Sys.time()
+  # Fit the model
+  q <- 2
+  # y.1 <- y[seq(1,length(y),q)]
+  # y.2 <- y[seq(2,length(y),q)]
+  
+  A.starting <- diag(1,q)[lower.tri(diag(1,q), TRUE)]
+  #n.samples <- 1000
+  burn.in <- 1
+  thin <- 1
+  
+  starting <- list("phi"=rep(3/0.5,q), "A"=A.starting, "Psi"=rep(1,q))
+  tuning <- list("phi"=rep(1,q), "A"=rep(0.01,length(A.starting)), "Psi"=rep(0.01,q))
+  priors <- list("beta.Flat", "phi.Unif"=list(rep(3/0.75,q), rep(3/0.25,q)),
+                 "K.IW"=list(q+1, diag(0.1,q)), "Psi.ig"=list(c(2,2), c(0.1,0.1)))
+  
+  spB.m.1 <- spMvLM(list(y1 ~ 1, y2 ~ 1), 
+                coords = as.matrix(xy), starting=starting, tuning=tuning, priors=priors,
+                n.samples=n.samples, cov.model="exponential", n.report=100)
+  spB.m.1.pred <- spPredict(spB.m.1, start = burn.in, thin = thin, joint.TRUE,
+                         pred.covars = matrix(1, nrow = length(Y2_p), ncol = 2), 
+                         pred.coords = as.matrix(xy_p), verbose = FALSE)
+  spB.y.hat <- apply(spB.m.1.pred$p.y.predictive.samples, 1, median )
+  sqB.y1.hat <- spB.y.hat[ 1:81 ]
+  sqB.y2.hat <- spB.y.hat[ 82:162 ]
+  sim.sB_y1.mse <- sum( (Y1_p - sqB.y1.hat)^2)/length(Y1_p) 
+  sim.sB_y2.mse <- sum( (Y2_p - sqB.y2.hat)^2)/length(Y2_p) 
+  spB.mse1[ iter1 ] <- ( sim.sB_y1.mse + sim.sB_y2.mse )/2
+  spB.time1[ iter1 ] <- Sys.time() - tic.spB 
+  
 }
 
 
