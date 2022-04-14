@@ -20,7 +20,8 @@
 ##############################################################################
 
 # Set the working directory
-setwd("/Users/ed/Documents/GitHub/Spatial/SpatialProjectCode/")
+# setwd("/Users/ed/Documents/GitHub/Spatial/SpatialProjectCode/")
+setwd("~/Documents/GitHub/SpatialProjectCode/")
 #install.packages("fields")
 #install.packages("geoR")
 #library(geoR)
