@@ -19,7 +19,8 @@
 #
 ##############################################################################
 
-
+# Set the working directory
+setwd("/Users/ed/Documents/GitHub/Spatial/SpatialProjectCode/")
 #install.packages("fields")
 #install.packages("geoR")
 #library(geoR)
@@ -33,6 +34,8 @@ library(spBayes)
 # head(MI_TSCA)
 library(schnellerGP)
 source( "var_pred_code.R" )
+source( "help_files.R" )
+source( "set_up_data_TIES.R" )
 
 # set.seed(1234)
 # Simulation parameters...
