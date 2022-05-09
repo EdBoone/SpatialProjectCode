@@ -31,14 +31,19 @@ library(Matrix)
 library(ggplot2)
 library(spNNGP)
 library(spBayes)
-# data("MI_TSCA")
-# head(MI_TSCA)
 library(schnellerGP)
+data("MI_TSCA")
+head(MI_TSCA)
+library(splines)
+library(Rcpp)
+library(RcppArmadillo)
+library(data.table)
+library(pracma)
 source( "var_pred_code.R" )
 source( "help_files.R" )
-source( "set_up_data_TIES.R" )
+#source( "set_up_data_TIES.R" )
 
-# set.seed(1234)
+set.seed(1234)
 # Simulation parameters...
 nSim1 <- 10               # Number of simulations
 n.samples <-2000          # Number of MCMC samples for spNNGP and spBayes
@@ -83,6 +88,8 @@ if (spatial.design=="random.2d"){  # Random on unit square (2d)
 locs = cbind(x1,x2)
 locs_p = cbind( x1_p, x2_p )
 n_p <- nrow( locs_p )
+X <- locs
+X_hout <- locs_p
 
 #########################################################################
 #  True parameters 
@@ -155,6 +162,7 @@ for( iter1 in 1:nSim1 ){
   
   y1 = Y1_f[ 1:n ]
   y2 = Y2_f[ 1:n ]
+  Y = cbind(y1,y2)
   
   y1_p = Y1_f[ (n+1):(n+n_p) ]
   y2_p = Y2_f[ (n+1):(n+n_p) ]
@@ -168,6 +176,9 @@ for( iter1 in 1:nSim1 ){
   x = cbind( x1, x2 )
   x[,1] = (x[,1]-min(x[,1]))/max(x[,1])
   x[,2] = (x[,2]-min(x[,2]))/max(x[,2])
+  x_p <- cbind( x1_p, x2_p )
+  x_p[,1] = (x_p[,1]-min(x_p[,1]))/max(x_p[,1])
+  x_p[,2] = (x_p[,2]-min(x_p[,2]))/max(x_p[,2])
   
   idx_lat_mi = order(x[,1])
   idx_lon_mi = order(x[,2])
@@ -175,6 +186,13 @@ for( iter1 in 1:nSim1 ){
   idxs   <- matrix(NA,nrow=nrow(x),2)
   idxs[,1]    <- idx_lat_mi 
   idxs[,2]    <- idx_lon_mi
+  
+  idx_lat_mi_p = order(x_p[,1])
+  idx_lon_mi_p = order(x_p[,2])
+  TPs_p <- array(1,dim= c(nrow(x_p),2,2,2))
+  idxs_p <- matrix(NA,nrow=nrow(x_p),2)
+  idxs_p[,1]    <- idx_lat_mi_p
+  idxs_p[,2]    <- idx_lon_mi_p
   
   lsMat <- array(1,c(2,2,2))            #Matrix of length Scales
   TPscale <- matrix(sort(rnorm(2)),2,2) #Matrix of Variances
@@ -187,22 +205,29 @@ for( iter1 in 1:nSim1 ){
   
   temp_tau = 1000
   etas = rep(0,2*length(y1))
+  etas_p <- rep(0, 2*length( y1_p))
   t_etas = matrix(etas,nrow=2)
+  t_etas_p <- matrix( etas_p, nrow = 2 ) 
   #toDo : integrate the factor analysis into the 
   #       model. I.E. build the residual into the factor model
   
   for (ii in 1:25){
     #find the factor 'mean'
     t_etas = matrix(etas,nrow=2)
+    t_etas_p <- matrix( etas_p, nrow = 2 ) 
     fact_mean = lambda%*%t_etas #latent factor mean
+    fact_mean_p <- lambda%*%t_etas_p
+    
     ##############################
     # Sample from the additive TP y1
     for (jj in 1:(dim(TPs)[3])){
       ids = 1:(dim(TPs)[3])
       ids = ids[-jj]
       rY = matrix(y1-fact_mean[1,])
+      rY_p <- matrix( y1_p - fact_mean_p[1,])
       for (kk in ids){
         rY = rY - as.matrix(TPscale[kk,1]*apply(TPs[,,kk,1],1,prod))
+        rY_p <- rY_p - as.matrix( TPscale[kk,1]*apply( TPs_p[,,kk,1],1,prod) )
       }
       
       #sample the two Tensor Products
@@ -210,6 +235,10 @@ for( iter1 in 1:nSim1 ){
                                      lsMat[jj,1,1],idxs[,1],"matern")
       TPs[,2,jj,1] = HODLR_TP_sample(rY,TPscale[jj,1]*TPs[,1,jj,1],x[,2],temp_tau,
                                      lsMat[jj,2,1],idxs[,2],"matern")
+      TPs_p[,1,jj,1] <- HODLR_TP_sample(rY_p,TPscale[jj,1]*TPs_p[,2,jj,1],x_p[,1],temp_tau,
+                                        lsMat[jj,1,1],idxs_p[,1],"matern")
+      TPs_p[,2,jj,1] <- HODLR_TP_sample(rY_p,TPscale[jj,1]*TPs_p[,1,jj,1],x_p[,2],temp_tau,
+                                        lsMat[jj,2,1],idxs_p[,2],"matern")
       
       #sample the length scale
       lsMat[jj,1,2] = HODLR_TP_sample_ls(lsMat[jj,1,2],rY,TPscale[jj,2]*TPs[,2,jj,2],x[,1],
@@ -221,8 +250,11 @@ for( iter1 in 1:nSim1 ){
     }
     
     m_mean1 = rY*0; 
+    m_mean1_p <- rY_p*0
     for (kk in 1:(dim(TPs)[3])){
       m_mean1 = m_mean1 + as.matrix(TPscale[kk,1]*apply(TPs[,,kk,1],1,prod))
+      # unconditional mean
+      m_mean1_p = m_mean1_p + as.matrix(TPscale[kk,1]*apply(TPs_p[,,kk,1],1,prod))
     }
     
     
@@ -289,11 +321,11 @@ for( iter1 in 1:nSim1 ){
     # Data to predict
     # Y1_p = m_mean1 + W1_p + sqrt(tausq1)*rnorm((n1-1)*(n2-1))
     # Y2_p = m_mean2 + W2_p + sqrt(tausq2)*rnorm((n1-1)*(n2-1))
-    m_X <- matrix( 0, nrow = length( x1 ), ncol = 1 )
-    m_new <- matrix(0, nrow = length( x1_p ) , ncol = 1 )
-    HodlR.pred.y <- pred_Mean_Matern( xy, xy_p, m_X, m_new, 
-                                      obsv_X = m_mean1, 
-                                      var = 1,  lsMat)
+    # m_X <- matrix( 0, nrow = length( x1 ), ncol = 1 )
+    # m_new <- matrix(0, nrow = length( x1_p ) , ncol = 1 )
+    # HodlR.pred.y <- pred_Mean_Matern( X, X_hout, m_X, m_new, 
+    #                                  obsv_X = m_mean1, 
+    #                                  var = 1,  lsMat[1,1,1] )
   }
   HodlR.time1[ iter1 ] <- Sys.time() - HodlR.tic1
 
